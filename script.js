@@ -206,7 +206,7 @@ function renderMonthTotals() {
   const el = document.getElementById('monthTotals');
   if (el) {
     const label = friendlyMonthOrAll(MONTH_FILTER);
-    const cat = CURRENT_FILTER ? ` + category "${CURRENT_FILTER}"` : "";
+    const cat = CURRENT_FILTER ? ` + category \"${CURRENT_FILTER}\"` : "";
     el.innerHTML = `Showing <span class="badge">${count}</span> transactions for <strong>${friendlyMonthOrAll(MONTH_FILTER)}${cat}</strong> · ` +
                    `Debit: <strong>$${debit.toFixed(2)}</strong> · ` +
                    `Credit: <strong>$${credit.toFixed(2)}</strong> · ` +
@@ -245,7 +245,7 @@ function renderTotalsBar(txns) {
 }
 
 
-function exportTotals() {
+function exportTotalsold() {
   const txns = monthFilteredTxns();
   const { rows, grand } = computeCategoryTotals(txns);
   // Always use a friendly label like "August 2025" for both header and filename
@@ -266,6 +266,52 @@ function exportTotals() {
   a.click();
   a.remove();
 }
+function exportTotals() {
+  const txns = monthFilteredTxns();
+  const { rows, grand } = computeCategoryTotals(txns);
+
+  const label = friendlyMonthOrAll(MONTH_FILTER || getFirstTxnMonth(txns) || new Date());
+  const header = `SpendLite Category Totals (${label})`;
+
+  // dynamic widths for neat alignment
+  const catWidth = Math.max(8, ...rows.map(([cat]) => toTitleCase(cat).length), 'Category'.length);
+  const amtWidth = 12;
+  const pctWidth = 6;
+
+  const lines = [];
+  lines.push(header);
+  lines.push('='.repeat(header.length));
+  lines.push(
+    'Category'.padEnd(catWidth) + ' ' +
+    'Amount'.padStart(amtWidth) + ' ' +
+    '%'.padStart(pctWidth)
+  );
+
+  for (const [cat, total] of rows) {
+    const pct = grand ? (total / grand * 100) : 0;
+    lines.push(
+      toTitleCase(cat).padEnd(catWidth) + ' ' +
+      total.toFixed(2).padStart(amtWidth) + ' ' +
+      (pct.toFixed(1) + '%').padStart(pctWidth)
+    );
+  }
+
+  lines.push('');
+  lines.push(
+    'TOTAL'.padEnd(catWidth) + ' ' +
+    grand.toFixed(2).padStart(amtWidth) + ' ' +
+    '100%'.padStart(pctWidth)
+  );
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `category_totals_${forFilename(label)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 
 function getFilteredTxns(txns) {
   if (!CURRENT_FILTER) return txns;
@@ -275,7 +321,7 @@ function getFilteredTxns(txns) {
 function updateFilterUI() {
   const label = document.getElementById('activeFilter');
   const btn = document.getElementById('clearFilterBtn');
-  if (CURRENT_FILTER) { label.textContent = `— filtered by "${CURRENT_FILTER}"`; btn.style.display = ''; }
+  if (CURRENT_FILTER) { label.textContent = `— filtered by \"${CURRENT_FILTER}\"`; btn.style.display = ''; }
   else { label.textContent = ''; btn.style.display = 'none'; }
 }
 
@@ -309,27 +355,73 @@ function renderTransactionsTable(txns = monthFilteredTxns()) {
   renderPager(totalPages);
 }
 
+// --- helper: get next word after a marker (e.g., "paypal")
+function nextWordAfter(marker, desc) {
+  const lower = (desc || '').toLowerCase();
+  const i = lower.indexOf(String(marker).toLowerCase());
+  if (i === -1) return '';
+  // slice after the marker, trim separators like space, dash, colon, slash, asterisk
+  let after = (desc || '').slice(i + String(marker).length).replace(/^[\s\-:\/*]+/, '');
+  const m = after.match(/^([A-Za-z0-9&._]+)/); // merchant-like token
+  return m ? m[1] : '';
+}
+
+
 function assignCategory(idx) {
   const txn = CURRENT_TXNS[idx];
   if (!txn) return;
-  let desc = txn.description || "";
-  let suggested = "";
+  const desc = txn.description || "";
   const up = desc.toUpperCase();
-  const visaPos = up.indexOf("VISA-");
-  if (visaPos !== -1) {
-    const after = desc.substring(visaPos + 5).trim();
-    suggested = (after.split(/\s+/)[0] || "").toUpperCase();
+
+  // Build a suggested keyword
+  let suggestedKeyword = "";
+  if (/\bPAYPAL\b/.test(up)) {
+    const nxt = nextWordAfter('paypal', desc);
+    suggestedKeyword = ('PAYPAL' + (nxt ? ' ' + nxt : '')).toUpperCase();
   } else {
-    suggested = (desc.split(/\s+/)[0] || "").toUpperCase();
+    const visaPos = up.indexOf("VISA-");
+    if (visaPos !== -1) {
+      const after = desc.substring(visaPos + 5).trim();
+      suggestedKeyword = (after.split(/\s+/)[0] || "").toUpperCase();
+    } else {
+      suggestedKeyword = (desc.split(/\s+/)[0] || "").toUpperCase();
+    }
   }
-  const chosenKeyword = prompt("Enter keyword to match:", suggested);
-  if (!chosenKeyword) return;
-  const category = (prompt("Enter category name:", (txn.category || "UNCATEGORISED").toUpperCase()) || "").toUpperCase();
-  if (!category) return;
-  const rulesBox = document.getElementById('rulesBox');
-  rulesBox.value += `\n${chosenKeyword} => ${category}`;
-  applyRulesAndRender();
+
+  // Let user confirm/edit keyword
+  const keywordInput = prompt("Enter keyword to match:", suggestedKeyword);
+  if (!keywordInput) return;
+  const keyword = keywordInput.trim().toUpperCase();
+
+  // Let user choose/add category (no automation)
+  const defaultCat = (txn.category || "UNCATEGORISED").toUpperCase();
+  const catInput = prompt("Enter category name:", defaultCat);
+  if (!catInput) return;
+  const category = catInput.trim().toUpperCase();
+
+  // Upsert into rulesBox
+  const box = document.getElementById('rulesBox');
+  const lines = String(box.value || "").split(/\r?\n/);
+  let updated = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] || "").trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split(/=>/i);
+    if (parts.length >= 2) {
+      const k = parts[0].trim().toUpperCase();
+      if (k === keyword) {
+        lines[i] = `${keyword} => ${category}`;
+        updated = true;
+        break;
+      }
+    }
+  }
+  if (!updated) lines.push(`${keyword} => ${category}`);
+  box.value = lines.join("\n");
+  try { localStorage.setItem(LS_KEYS.RULES, box.value); } catch {}
+  if (typeof applyRulesAndRender === 'function') applyRulesAndRender();
 }
+
 
 function exportRules() {
   const text = document.getElementById('rulesBox').value || '';
@@ -509,3 +601,5 @@ document.addEventListener('DOMContentLoaded', () => { try { updateMonthBanner();
 window.addEventListener('beforeunload', () => {
   try { localStorage.setItem(LS_KEYS.TXNS_JSON, JSON.stringify(CURRENT_TXNS||[])); } catch {}
 });
+document.getElementById('exportTotalsBtn')
+  .addEventListener('click', exportTotals);
