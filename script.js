@@ -145,13 +145,31 @@ function parseRules(text) {
   return rules;
 }
 
+
 function categorise(txns, rules) {
   for (const t of txns) {
-    const desc = t.description.toLowerCase();
+    // Normalise description: lowercase and collapse separators (dash/asterisk/underscore) to spaces
+    const desc = String(t.description || '')
+      .toLowerCase()
+      .replace(/[\-\*_]+/g, ' ')   // separators -> spaces
+      .replace(/\s+/g, ' ')         // collapse multiple spaces
+      .trim();
+
     let matched = 'UNCATEGORISED';
     for (const r of rules) {
-      if (desc.includes(r.keyword)) { matched = r.category; break; }
+      // Normalise rule keyword the same way for robust matching
+      const key = String(r.keyword || '')
+        .toLowerCase()
+        .replace(/[\-\*_]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (key && desc.includes(key)) { matched = r.category; break; }
     }
+    t.category = matched;
+  }
+  return txns;
+}
+}
     t.category = matched;
   }
   return txns;
